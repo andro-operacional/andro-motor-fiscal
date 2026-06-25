@@ -1,0 +1,17 @@
+{
+  "name": "andro-motor-fiscal",
+  "version": "1.0.0",
+  "description": "Motor de integracao com o Serpro Integra Contador (Caixa Postal e-CAC) para o andro Operacional",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "express": "^4.19.2"
+  }
+}
