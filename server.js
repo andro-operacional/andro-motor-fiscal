@@ -156,7 +156,7 @@ app.post('/testar-cliente', async (req, res) => {
   try {
     const indicador = await chamar('Monitorar', CX_INDICADOR, cnpj);
     let lista = null;
-    try { lista = await chamar('Consultar', CX_LISTA, cnpj, { statusLeitura: '0' }); }
+    try { lista = await chamar('Consultar', CX_LISTA, cnpj, { statusLeitura: '0', indicadorPagina: '0', ponteiroPagina: '0', categoria: '0' }); }
     catch (e) { lista = { erro: e.response?.data || e.message }; }
     res.json({ ok: true, cnpj, indicador, lista });
   } catch (e) {
