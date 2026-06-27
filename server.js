@@ -8,6 +8,7 @@ const express = require('express');
 const https = require('https');
 const fs = require('fs');
 const axios = require('axios');
+const forge = require('node-forge'); // lê certificados ICP-Brasil "legados" que o OpenSSL novo recusa
 
 const app = express();
 app.use(express.json());
@@ -38,16 +39,32 @@ const CX_LISTA     = process.env.CX_LISTA     || 'MSGCONTRIBUINTE61';    // list
 
 /* ---- Certificado A1 (mTLS) ---- */
 let _agent = null;
-function getPfx() {
-  if (CERT_B64) return Buffer.from(CERT_B64.replace(/\s+/g, ''), 'base64'); // base64 limpo -> binário
-  return fs.readFileSync(CERT_PATH);
+// Lê o .pfx e extrai chave+certificado com node-forge (compatível com certificados ICP-Brasil legados)
+function loadIdentity() {
+  let der;
+  if (CERT_B64) der = forge.util.decode64(CERT_B64.replace(/\s+/g, ''));
+  else der = fs.readFileSync(CERT_PATH).toString('binary');
+  const asn1 = forge.asn1.fromDer(der);
+  const p12 = forge.pkcs12.pkcs12FromAsn1(asn1, CERT_PASSWORD);
+  // chave privada
+  const shrouded = p12.getBags({ bagType: forge.pki.oids.pkcs8ShroudedKeyBag })[forge.pki.oids.pkcs8ShroudedKeyBag] || [];
+  const plain = p12.getBags({ bagType: forge.pki.oids.keyBag })[forge.pki.oids.keyBag] || [];
+  const keyBag = shrouded[0] || plain[0];
+  if (!keyBag || !keyBag.key) throw new Error('Chave privada nao encontrada (senha do certificado errada?)');
+  const keyPem = forge.pki.privateKeyToPem(keyBag.key);
+  // certificados
+  const certs = (p12.getBags({ bagType: forge.pki.oids.certBag })[forge.pki.oids.certBag] || []).map(b => b.cert);
+  if (!certs.length) throw new Error('Certificado nao encontrado no .pfx');
+  const keyN = keyBag.key.n ? keyBag.key.n.toString(16) : null;
+  const leaf = certs.find(c => c.publicKey && c.publicKey.n && c.publicKey.n.toString(16) === keyN) || certs[0];
+  const certPem = forge.pki.certificateToPem(leaf);
+  const caPem = certs.filter(c => c !== leaf).map(c => forge.pki.certificateToPem(c));
+  return { key: keyPem, cert: certPem, ca: caPem };
 }
 function getAgent() {
   if (!_agent) {
-    _agent = new https.Agent({
-      pfx: getPfx(),
-      passphrase: CERT_PASSWORD,
-    });
+    const id = loadIdentity();
+    _agent = new https.Agent({ key: id.key, cert: id.cert, ca: id.ca.length ? id.ca : undefined });
   }
   return _agent;
 }
