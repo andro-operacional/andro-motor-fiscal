@@ -9,6 +9,7 @@ const https = require('https');
 const fs = require('fs');
 const axios = require('axios');
 const forge = require('node-forge'); // lê certificados ICP-Brasil "legados" que o OpenSSL novo recusa
+const { createClient } = require('@supabase/supabase-js'); // pra ler/gravar na base do sistema
 
 const app = express();
 app.use(express.json());
@@ -31,6 +32,11 @@ const CERT_B64        = process.env.SERPRO_CERT_PFX_BASE64 || '';          // ce
 const CERT_PATH       = process.env.CERT_PATH || '/etc/secrets/andro.pfx'; // alternativa: arquivo .pfx (secret file)
 const CERT_PASSWORD   = process.env.SERPRO_CERT_PASSWORD || '';
 const ANDRO_CNPJ      = (process.env.ANDRO_CNPJ || '37922384000100').replace(/\D/g, '');
+
+/* ---- Conexão com a base do sistema (Supabase) ---- */
+const SB_URL = process.env.SUPABASE_URL || '';
+const SB_KEY = process.env.SUPABASE_SERVICE_KEY || ''; // chave "service_role" — só fica aqui no servidor, nunca no navegador
+const sb = (SB_URL && SB_KEY) ? createClient(SB_URL, SB_KEY, { auth: { persistSession: false } }) : null;
 
 /* IDs do serviço de Caixa Postal (conforme doc do Serpro — ajustáveis por variável de ambiente no teste) */
 const CX_SISTEMA   = 'CAIXAPOSTAL';
@@ -161,6 +167,82 @@ app.post('/testar-cliente', async (req, res) => {
     res.json({ ok: true, cnpj, indicador, lista });
   } catch (e) {
     res.status(500).json({ ok: false, cnpj, etapa: 'consulta', erro: e.response?.data || e.message });
+  }
+});
+
+/* ---- Extrai "tem mensagem nova?" da resposta do indicador (formato do Serpro varia) ---- */
+function lerIndicadorNovas(resp) {
+  // a resposta traz um campo "dados" que normalmente é um JSON em texto
+  let d = resp && resp.dados;
+  if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { d = null; } }
+  const alvo = d || resp || {};
+  let achou = null;
+  (function busca(o) {
+    if (achou !== null || !o || typeof o !== 'object') return;
+    for (const k of Object.keys(o)) {
+      if (/indicadorMensagensNovas/i.test(k)) { achou = o[k]; return; }
+      if (typeof o[k] === 'object') busca(o[k]);
+    }
+  })(alvo);
+  if (achou === null) return null;            // não conseguiu ler
+  return Number(String(achou).replace(/\D/g, '')) > 0; // true = tem mensagem nova
+}
+
+/* 3) RODAR: verifica o e-CAC de TODOS os clientes ativos e grava na base do sistema.
+   Body opcional: { "limite": 3 } pra testar com poucos clientes primeiro. */
+app.post('/rodar', async (req, res) => {
+  if (!autorizado(req, res)) return;
+  if (!sb) return res.status(500).json({ ok: false, erro: 'Supabase nao configurado (faltam SUPABASE_URL e SUPABASE_SERVICE_KEY no Render)' });
+  const limite = Number(req.body?.limite) || 0; // 0 = todos
+  try {
+    // 1. lê a base
+    const { data: row, error } = await sb.from('app_state').select('data').eq('id', 'main').maybeSingle();
+    if (error) throw error;
+    const db = row?.data || {};
+    db.clientes = Array.isArray(db.clientes) ? db.clientes : [];
+
+    // 2. seleciona clientes ativos com CNPJ válido
+    let alvos = db.clientes.filter(c => {
+      const ativo = c.ativo !== false && c.etapa !== 'Perdido' && c.etapa !== 'Inativo';
+      return ativo && String(c.cnpj || '').replace(/\D/g, '').length === 14;
+    });
+    if (limite > 0) alvos = alvos.slice(0, limite);
+
+    const hoje = new Date().toISOString().slice(0, 10);
+    let verificados = 0, comMensagem = 0;
+    const falhas = [];
+
+    // 3. consulta o e-CAC de cada um (em série, com pausinha)
+    for (const c of alvos) {
+      const cnpj = String(c.cnpj).replace(/\D/g, '');
+      try {
+        const ind = await chamar('Monitorar', CX_INDICADOR, cnpj);
+        const novas = lerIndicadorNovas(ind);
+        c.fiscalMsg = novas === true;
+        c.fiscalUltima = hoje;
+        c.fiscalPor = 'Serpro (automático)';
+        if (novas === null) c.fiscalObs = 'Não foi possível ler o indicador';
+        verificados++;
+        if (novas === true) comMensagem++;
+      } catch (e) {
+        const msg = e.response?.data?.mensagens?.[0]?.texto || e.response?.data?.mensagem || e.message;
+        c.fiscalUltima = hoje;
+        c.fiscalPor = 'Serpro (erro)';
+        c.fiscalObs = String(msg).slice(0, 180);
+        falhas.push({ nome: c.nome || cnpj, cnpj, erro: String(msg).slice(0, 180) });
+      }
+      await new Promise(r => setTimeout(r, 350));
+    }
+
+    // 4. grava de volta na base (db.clientes já foi atualizado por referência)
+    const { error: errSave } = await sb.from('app_state')
+      .update({ data: db, updated_at: new Date().toISOString() })
+      .eq('id', 'main');
+    if (errSave) throw errSave;
+
+    res.json({ ok: true, total_ativos: alvos.length, verificados, com_mensagem_nova: comMensagem, falhas });
+  } catch (e) {
+    res.status(500).json({ ok: false, etapa: 'rodar', erro: e.response?.data || e.message });
   }
 });
 
