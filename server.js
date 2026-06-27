@@ -93,8 +93,8 @@ async function getToken() {
   return _token;
 }
 
-/* ---- Consulta genérica ao gateway (Consultar) ---- */
-async function consultar(idServico, cnpjCliente, dados = {}) {
+/* ---- Chamada genérica ao gateway (verbo = Consultar, Monitorar, Emitir, ...) ---- */
+async function chamar(verbo, idServico, cnpjCliente, dados = {}) {
   const tok = await getToken();
   const body = {
     contratante:      { numero: ANDRO_CNPJ, tipo: 2 },
@@ -108,7 +108,7 @@ async function consultar(idServico, cnpjCliente, dados = {}) {
     },
   };
   const { data } = await axios.post(
-    'https://gateway.apiserpro.serpro.gov.br/integra-contador/v1/Consultar',
+    'https://gateway.apiserpro.serpro.gov.br/integra-contador/v1/' + verbo,
     body,
     {
       httpsAgent: getAgent(),
@@ -154,9 +154,9 @@ app.post('/testar-cliente', async (req, res) => {
   const cnpj = String(req.body?.cnpj || '').replace(/\D/g, '');
   if (!cnpj) return res.status(400).json({ erro: 'informe o cnpj: { "cnpj": "00000000000000" }' });
   try {
-    const indicador = await consultar(CX_INDICADOR, cnpj);
+    const indicador = await chamar('Monitorar', CX_INDICADOR, cnpj);
     let lista = null;
-    try { lista = await consultar(CX_LISTA, cnpj); }
+    try { lista = await chamar('Consultar', CX_LISTA, cnpj); }
     catch (e) { lista = { erro: e.response?.data || e.message }; }
     res.json({ ok: true, cnpj, indicador, lista });
   } catch (e) {
