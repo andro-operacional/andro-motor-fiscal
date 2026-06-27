@@ -26,7 +26,8 @@ const PORT            = process.env.PORT || 3000;
 const MOTOR_SECRET    = process.env.MOTOR_SECRET || '';            // senha simples que protege os endpoints de teste
 const CONSUMER_KEY    = process.env.SERPRO_CONSUMER_KEY || '';
 const CONSUMER_SECRET = process.env.SERPRO_CONSUMER_SECRET || '';
-const CERT_PATH       = process.env.CERT_PATH || '/etc/secrets/andro.pfx'; // arquivo .pfx (secret file do Render)
+const CERT_B64        = process.env.SERPRO_CERT_PFX_BASE64 || '';          // certificado em base64 (texto seguro) — PREFERIDO
+const CERT_PATH       = process.env.CERT_PATH || '/etc/secrets/andro.pfx'; // alternativa: arquivo .pfx (secret file)
 const CERT_PASSWORD   = process.env.SERPRO_CERT_PASSWORD || '';
 const ANDRO_CNPJ      = (process.env.ANDRO_CNPJ || '37922384000100').replace(/\D/g, '');
 
@@ -37,10 +38,14 @@ const CX_LISTA     = process.env.CX_LISTA     || 'MSGCONTRIBUINTE61';    // list
 
 /* ---- Certificado A1 (mTLS) ---- */
 let _agent = null;
+function getPfx() {
+  if (CERT_B64) return Buffer.from(CERT_B64.replace(/\s+/g, ''), 'base64'); // base64 limpo -> binário
+  return fs.readFileSync(CERT_PATH);
+}
 function getAgent() {
   if (!_agent) {
     _agent = new https.Agent({
-      pfx: fs.readFileSync(CERT_PATH),
+      pfx: getPfx(),
       passphrase: CERT_PASSWORD,
     });
   }
