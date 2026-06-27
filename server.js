@@ -64,7 +64,8 @@ function loadIdentity() {
 function getAgent() {
   if (!_agent) {
     const id = loadIdentity();
-    _agent = new https.Agent({ key: id.key, cert: id.cert, ca: id.ca.length ? id.ca : undefined });
+    // só apresentamos chave+cert do cliente; a verificação do servidor usa as CAs padrão do Node
+    _agent = new https.Agent({ key: id.key, cert: id.cert });
   }
   return _agent;
 }
