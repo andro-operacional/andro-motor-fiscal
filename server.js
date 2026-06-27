@@ -34,7 +34,7 @@ const ANDRO_CNPJ      = (process.env.ANDRO_CNPJ || '37922384000100').replace(/\D
 
 /* IDs do serviço de Caixa Postal (conforme doc do Serpro — ajustáveis por variável de ambiente no teste) */
 const CX_SISTEMA   = 'CAIXAPOSTAL';
-const CX_INDICADOR = process.env.CX_INDICADOR || 'INDICADORMENSAGENS62'; // indica se há mensagens novas
+const CX_INDICADOR = process.env.CX_INDICADOR || 'INNOVAMSG63';          // indica se há mensagens novas
 const CX_LISTA     = process.env.CX_LISTA     || 'MSGCONTRIBUINTE61';    // lista as mensagens
 
 /* ---- Certificado A1 (mTLS) ---- */
