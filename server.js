@@ -40,8 +40,10 @@ const sb = (SB_URL && SB_KEY) ? createClient(SB_URL, SB_KEY, { auth: { persistSe
 
 /* IDs do serviço de Caixa Postal (conforme doc do Serpro — ajustáveis por variável de ambiente no teste) */
 const CX_SISTEMA   = 'CAIXAPOSTAL';
-const CX_INDICADOR = process.env.CX_INDICADOR || 'INNOVAMSG63';          // indica se há mensagens novas
-const CX_LISTA     = process.env.CX_LISTA     || 'MSGCONTRIBUINTE61';    // lista as mensagens
+const CX_INDICADOR = process.env.CX_INDICADOR || 'INNOVAMSG63';          // indica se há mensagens novas (verbo Monitorar)
+const CX_LISTA     = process.env.CX_LISTA     || 'MSGCONTRIBUINTE61';    // lista as mensagens (verbo Consultar)
+const CX_DETALHE   = process.env.CX_DETALHE   || 'MSGDETALHAMENTO62';    // conteúdo de UMA mensagem por isn (verbo Consultar)
+const CX_MAX_MSGS  = Number(process.env.CX_MAX_MSGS || 8);               // qtde máx. de mensagens que baixamos por cliente
 
 /* ---- Certificado A1 (mTLS) ---- */
 let _agent = null;
@@ -129,6 +131,77 @@ async function chamar(verbo, idServico, cnpjCliente, dados = {}) {
   return data;
 }
 
+/* ---- Caixa Postal: ler a lista de mensagens e o conteúdo de cada uma ---- */
+// O Serpro devolve um campo "dados" que normalmente é um JSON em texto.
+function parseDados(resp) {
+  let d = resp && resp.dados;
+  if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { d = null; } }
+  return d || {};
+}
+// Extrai a lista de mensagens (cada uma tem um "isn")
+function coletarMensagens(listaResp) {
+  const d = parseDados(listaResp);
+  const cont = Array.isArray(d.conteudo) ? d.conteudo : (Array.isArray(d.listaMensagens) ? [{ listaMensagens: d.listaMensagens }] : []);
+  let msgs = [];
+  cont.forEach(c => {
+    if (Array.isArray(c.listaMensagens)) msgs = msgs.concat(c.listaMensagens);
+    else if (c && (c.isn || c.assuntoModelo)) msgs.push(c);
+  });
+  return msgs;
+}
+function pickIsn(m) { return m.isn || m.ISN || m.isnMensagem || m.numeroControle || ''; }
+// Monta um HTML legível com o conteúdo das mensagens (vira o anexo)
+function montarDocumento(nomeCliente, cnpj, detalhes) {
+  const linhas = detalhes.map(det => {
+    const c = (parseDados(det).conteudo && parseDados(det).conteudo[0]) || parseDados(det) || {};
+    let corpo = c.corpoModelo || c.corpo || '';
+    const vars = Array.isArray(c.variaveis) ? c.variaveis : [];
+    vars.forEach((v, i) => { corpo = corpo.split('{' + i + '}').join(v); });
+    const assunto = c.assuntoModelo || c.assunto || '(sem assunto)';
+    const data = c.dataEnvio || '';
+    return `<div style="border:1px solid #e3e3e3;border-radius:10px;padding:14px;margin:0 0 14px">
+      <div style="font-weight:700;color:#452289;font-size:15px">${assunto}</div>
+      <div style="color:#888;font-size:12px;margin:2px 0 10px">Enviada: ${data}</div>
+      <div style="font-size:14px;line-height:1.5">${corpo || '(sem corpo)'}</div>
+    </div>`;
+  }).join('');
+  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">
+    <title>e-CAC ${nomeCliente}</title></head>
+    <body style="font-family:Arial,Helvetica,sans-serif;color:#26203a;max-width:760px;margin:18px auto;padding:0 14px">
+    <h2 style="color:#452289">Mensagens e-CAC — ${nomeCliente}</h2>
+    <p style="color:#666;font-size:13px">CNPJ ${cnpj} · baixado em ${new Date().toLocaleString('pt-BR')} · via Serpro Integra Contador</p>
+    ${linhas || '<p>Nenhuma mensagem.</p>'}
+    </body></html>`;
+}
+// Lê a caixa postal de um cliente: indicador + lista + conteúdo. Retorna {novas, assuntos, anexo}.
+async function lerCaixaPostal(cnpj, nomeCliente) {
+  const ind = await chamar('Monitorar', CX_INDICADOR, cnpj);
+  const temNovas = lerIndicadorNovas(ind);
+  let msgs = [], listaErro = null;
+  try {
+    const lista = await chamar('Consultar', CX_LISTA, cnpj, { statusLeitura: '0', indicadorPagina: '0', ponteiroPagina: '00000000000000' });
+    msgs = coletarMensagens(lista).filter(m => pickIsn(m));
+  } catch (e) { listaErro = e.response?.data?.mensagens?.[0]?.texto || e.response?.data || e.message; }
+  if (msgs.length > CX_MAX_MSGS) msgs = msgs.slice(0, CX_MAX_MSGS);
+  const detalhes = [];
+  const assuntos = [];
+  for (const m of msgs) {
+    if (m.assuntoModelo) assuntos.push(m.assuntoModelo);
+    try {
+      const det = await chamar('Consultar', CX_DETALHE, cnpj, { isn: String(pickIsn(m)) });
+      detalhes.push(det);
+    } catch (e) { /* ignora uma mensagem que falhe */ }
+    await new Promise(r => setTimeout(r, 200));
+  }
+  let anexo = null;
+  if (detalhes.length) {
+    const html = montarDocumento(nomeCliente || cnpj, cnpj, detalhes);
+    const b64 = Buffer.from(html, 'utf8').toString('base64');
+    anexo = { nome: 'eCAC_' + cnpj + '_' + new Date().toISOString().slice(0, 10) + '.html', dataUrl: 'data:text/html;base64,' + b64, auto: true };
+  }
+  return { novas: temNovas === true, qtde: msgs.length, assuntos, anexo, listaErro };
+}
+
 /* ---- Proteção simples dos endpoints ---- */
 function autorizado(req, res) {
   if (!MOTOR_SECRET || req.get('x-motor-secret') !== MOTOR_SECRET) {
@@ -160,11 +233,8 @@ app.post('/testar-cliente', async (req, res) => {
   const cnpj = String(req.body?.cnpj || '').replace(/\D/g, '');
   if (!cnpj) return res.status(400).json({ erro: 'informe o cnpj: { "cnpj": "00000000000000" }' });
   try {
-    const indicador = await chamar('Monitorar', CX_INDICADOR, cnpj);
-    let lista = null;
-    try { lista = await chamar('Consultar', CX_LISTA, cnpj, { statusLeitura: '0', indicadorPagina: '0', ponteiroPagina: '0', categoria: '0' }); }
-    catch (e) { lista = { erro: e.response?.data || e.message }; }
-    res.json({ ok: true, cnpj, indicador, lista });
+    const r = await lerCaixaPostal(cnpj, req.body?.nome || '');
+    res.json({ ok: true, cnpj, tem_mensagem_nova: r.novas, mensagens_baixadas: r.qtde, assuntos: r.assuntos, documento_gerado: r.anexo ? r.anexo.nome : null, lista_erro: r.listaErro || null });
   } catch (e) {
     res.status(500).json({ ok: false, cnpj, etapa: 'consulta', erro: e.response?.data || e.message });
   }
@@ -212,18 +282,21 @@ app.post('/rodar', async (req, res) => {
     let verificados = 0, comMensagem = 0;
     const falhas = [];
 
-    // 3. consulta o e-CAC de cada um (em série, com pausinha)
+    // 3. consulta o e-CAC de cada um (indicador + lista + conteúdo) e anexa o documento
     for (const c of alvos) {
       const cnpj = String(c.cnpj).replace(/\D/g, '');
       try {
-        const ind = await chamar('Monitorar', CX_INDICADOR, cnpj);
-        const novas = lerIndicadorNovas(ind);
-        c.fiscalMsg = novas === true;
+        const r = await lerCaixaPostal(cnpj, c.nome);
+        c.fiscalMsg = r.novas;
         c.fiscalUltima = hoje;
         c.fiscalPor = 'Serpro (automático)';
-        if (novas === null) c.fiscalObs = 'Não foi possível ler o indicador';
+        c.fiscalSituacao = r.novas ? 'Mensagem nova' : 'Regular';
+        if (r.assuntos && r.assuntos.length) c.fiscalObs = r.assuntos.slice(0, 5).join(' · ');
+        // substitui o documento automático anterior, mantendo anexos manuais
+        c.fiscalAnexos = (Array.isArray(c.fiscalAnexos) ? c.fiscalAnexos : []).filter(a => !a.auto);
+        if (r.anexo) c.fiscalAnexos.push(r.anexo);
         verificados++;
-        if (novas === true) comMensagem++;
+        if (r.novas) comMensagem++;
       } catch (e) {
         const msg = e.response?.data?.mensagens?.[0]?.texto || e.response?.data?.mensagem || e.message;
         c.fiscalUltima = hoje;
