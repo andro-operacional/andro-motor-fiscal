@@ -319,4 +319,89 @@ app.post('/rodar', async (req, res) => {
   }
 });
 
+/* =====================================================================
+   4) GERAR CONTRATO no ZapSign a partir do cadastro do cliente
+   Recebe { clienteId, modelo, valorExtenso } — lê o cliente no Supabase,
+   monta os campos e cria o documento no ZapSign. Devolve o link de assinatura.
+   O token do ZapSign fica SÓ aqui (ZAPSIGN_TOKEN), nunca no navegador.
+   ===================================================================== */
+const ZAPSIGN_TOKEN = process.env.ZAPSIGN_TOKEN || '';
+
+function dataPtBR(d){
+  const meses = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
+  return { dia: String(d.getDate()).padStart(2,'0'), mes: meses[d.getMonth()], ano: String(d.getFullYear()),
+           completa: d.getDate()+' de '+meses[d.getMonth()]+' de '+d.getFullYear() };
+}
+function fmtBRL(v){ const n = Number(String(v).replace(/\./g,'').replace(',','.')) || 0; return n.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+
+app.post('/gerar-contrato', async (req, res) => {
+  try {
+    if (!ZAPSIGN_TOKEN) return res.status(500).json({ ok:false, erro:'Falta o ZAPSIGN_TOKEN nas variáveis do Render.' });
+    if (!sb)           return res.status(500).json({ ok:false, erro:'Supabase não configurado no Render.' });
+    const { clienteId, modelo, valorExtenso } = req.body || {};
+    if (!clienteId || !modelo) return res.status(400).json({ ok:false, erro:'Faltam clienteId e/ou modelo.' });
+
+    // lê o cliente na base
+    const { data: row, error } = await sb.from('app_state').select('data').eq('id','main').maybeSingle();
+    if (error) throw error;
+    const db = row?.data || {};
+    const c = (db.clientes || []).find(x => x.id === clienteId);
+    if (!c) return res.status(404).json({ ok:false, erro:'Cliente não encontrado na base.' });
+
+    const hoje = dataPtBR(new Date());
+    const cidUf = [c.endCidade, c.endEstado].filter(Boolean).join(' - ');
+    const valorFmt = fmtBRL(c.valor);
+    const extenso = valorExtenso || '';
+
+    // mapa: cobre os nomes dos DOIS modelos (o ZapSign ignora o que não existir no modelo escolhido)
+    const M = {
+      'NOME DA EMPRESA': c.nome, 'CNPJ': c.cnpj, 'NÚMERO DO CNPJ': c.cnpj,
+      'nome completo': (c.assinante||c.contato), 'NOME COMPLETO': (c.assinante||c.contato), 'NOME': (c.assinante||c.contato),
+      'CPF': c.cpf, 'RG': c.rg, 'NACIONALIDADE': c.nacionalidade,
+      'FUNÇÃO DENTRO DA EMPRESA': c.funcao,
+      'Email': c.email, 'EMAIL': c.email,
+      'TELEFONE': c.telefone, 'celular': c.telefone,
+      'rua': c.endRua, 'NOME DA RUA': c.endRua,
+      'numero': c.endNumero, 'NUMERO': c.endNumero,
+      'bairro': c.endBairro, 'BAIRRO': c.endBairro,
+      'cep': c.endCep, 'CEP': c.endCep,
+      'CIDADE E ESTADO': cidUf, 'ESTADO': c.endEstado,
+      'Valor do contrato': valorFmt, 'valor por extenso': extenso,
+      'nome do plano': c.planoNome,
+      'Data do contrato': hoje.completa, 'dia': hoje.dia, 'mês': hoje.mes, 'ano': hoje.ano,
+      'vencimento do contrato': c.contratoFim ? String(c.contratoFim).split('-').reverse().join('/') : '',
+      'Vencimento de Honorário': c.vencHonorario
+    };
+    const data = Object.keys(M).filter(k => M[k]).map(k => ({ de: k, para: String(M[k]) }));
+
+    const payload = {
+      template_id: modelo,
+      signer_name: c.assinante || c.contato || c.nome || 'Contratante',
+      lang: 'pt-br',
+      data
+    };
+    if (c.email) payload.signer_email = c.email;
+    const tel = String(c.telefone || '').replace(/\D/g,'');
+    if (tel.length >= 10) { payload.signer_phone_country = '55'; payload.signer_phone_number = tel; }
+
+    const zap = await axios.post('https://api.zapsign.com.br/api/v1/models/create-doc/', payload, {
+      headers: { 'Authorization': 'Bearer ' + ZAPSIGN_TOKEN, 'Content-Type': 'application/json' },
+      timeout: 60000
+    });
+    const d = zap.data || {};
+    const link = (d.signers && d.signers[0] && (d.signers[0].sign_url || d.signers[0].signer_url)) || d.sign_url || '';
+
+    // grava o link de volta no cliente
+    try {
+      c.contratoLink = link; c.contratoEm = Date.now(); c.contratoToken = d.token || '';
+      await sb.from('app_state').upsert({ id:'main', data: db, updated_at: new Date().toISOString() });
+    } catch (e) { /* se falhar a gravação, ainda devolvemos o link */ }
+
+    res.json({ ok:true, link, doc_token: d.token || '', campos_enviados: data.length });
+  } catch (e) {
+    const det = e.response?.data || e.message;
+    res.status(500).json({ ok:false, etapa:'gerar-contrato', erro: typeof det==='string'?det:JSON.stringify(det) });
+  }
+});
+
 app.listen(PORT, () => console.log('andro motor fiscal rodando na porta ' + PORT));
