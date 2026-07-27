@@ -12,9 +12,8 @@ const forge = require('node-forge'); // lê certificados ICP-Brasil "legados" qu
 const { createClient } = require('@supabase/supabase-js'); // pra ler/gravar na base do sistema
 
 const app = express();
-app.use(express.json());
 
-/* ---- CORS (pra página de teste local conseguir chamar) ---- */
+/* ---- CORS PRIMEIRO (pra os cabeçalhos valerem até em erro de tamanho) ---- */
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'content-type, x-motor-secret');
@@ -22,6 +21,9 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
+
+/* aceita corpo grande (documentos viram imagem base64) */
+app.use(express.json({ limit: '30mb' }));
 
 /* ---- Configuração (variáveis de ambiente / secret files no Render) ---- */
 const PORT            = process.env.PORT || 3000;
@@ -413,19 +415,26 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 app.post('/ler-documentos', async (req, res) => {
   try {
     if (!OPENAI_API_KEY) return res.status(500).json({ ok:false, erro:'Falta a OPENAI_API_KEY nas variáveis do Render.' });
-    const arquivos = (req.body && req.body.arquivos) || [];
-    if (!arquivos.length) return res.status(400).json({ ok:false, erro:'Nenhum documento enviado.' });
+    // aceita o formato novo (itens: imagem OU texto) e o antigo (arquivos: só imagem)
+    let itens = (req.body && req.body.itens) || null;
+    if (!itens) { const arq = (req.body && req.body.arquivos) || []; itens = arq.map(a => ({ tipo:'imagem', dataUrl:a.dataUrl })); }
+    if (!itens.length) return res.status(400).json({ ok:false, erro:'Nenhum documento enviado.' });
 
-    const prompt = 'Você lê documentos brasileiros (cartão CNPJ, contrato social, RG, CNH, comprovante de endereço) e extrai dados do cliente e do sócio que assina. '
+    const prompt = 'Você lê documentos brasileiros (cartão CNPJ, contrato social, RG, CNH, comprovante de endereço, planilhas) e extrai dados do cliente e do sócio que assina. '
       + 'Responda SOMENTE um JSON com estas chaves (string vazia se não encontrar): '
       + '{"nome_empresa":"","cnpj":"","nome_socio":"","cpf":"","rg":"","nacionalidade":"","funcao":"","email":"","telefone":"","rua":"","numero":"","bairro":"","cidade":"","uf":"","cep":""}. '
       + 'Regras: cnpj e cpf só com números; uf com 2 letras; nome_socio é a pessoa física (sócio/representante), nome_empresa é a razão social. Não invente dados.';
 
     const content = [{ type:'text', text: prompt }];
-    for (const a of arquivos) {
-      if (a && a.dataUrl && /^data:image\//.test(a.dataUrl)) content.push({ type:'image_url', image_url:{ url:a.dataUrl } });
+    for (const it of itens) {
+      if (!it) continue;
+      if (it.tipo === 'texto' && it.texto) {
+        content.push({ type:'text', text:'--- Documento'+(it.nome?(' ('+it.nome+')'):'')+' ---\n'+String(it.texto).slice(0, 8000) });
+      } else if (it.dataUrl && /^data:image\//.test(it.dataUrl)) {
+        content.push({ type:'image_url', image_url:{ url:it.dataUrl } });
+      }
     }
-    if (content.length === 1) return res.status(400).json({ ok:false, erro:'Envie imagens (foto/print). PDF ainda não é lido — tire um print da tela.' });
+    if (content.length === 1) return res.status(400).json({ ok:false, erro:'Não consegui ler o conteúdo do(s) documento(s).' });
 
     const resp = await axios.post('https://api.openai.com/v1/chat/completions', {
       model: 'gpt-4o-mini',
