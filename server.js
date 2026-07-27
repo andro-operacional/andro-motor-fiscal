@@ -404,4 +404,50 @@ app.post('/gerar-contrato', async (req, res) => {
   }
 });
 
+/* =====================================================================
+   5) LER DOCUMENTOS com IA (OpenAI GPT-4o-mini) e devolver os campos.
+   Recebe { arquivos: [{ nome, dataUrl }] } (imagens). Chave fica só aqui.
+   ===================================================================== */
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+
+app.post('/ler-documentos', async (req, res) => {
+  try {
+    if (!OPENAI_API_KEY) return res.status(500).json({ ok:false, erro:'Falta a OPENAI_API_KEY nas variáveis do Render.' });
+    const arquivos = (req.body && req.body.arquivos) || [];
+    if (!arquivos.length) return res.status(400).json({ ok:false, erro:'Nenhum documento enviado.' });
+
+    const prompt = 'Você lê documentos brasileiros (cartão CNPJ, contrato social, RG, CNH, comprovante de endereço) e extrai dados do cliente e do sócio que assina. '
+      + 'Responda SOMENTE um JSON com estas chaves (string vazia se não encontrar): '
+      + '{"nome_empresa":"","cnpj":"","nome_socio":"","cpf":"","rg":"","nacionalidade":"","funcao":"","email":"","telefone":"","rua":"","numero":"","bairro":"","cidade":"","uf":"","cep":""}. '
+      + 'Regras: cnpj e cpf só com números; uf com 2 letras; nome_socio é a pessoa física (sócio/representante), nome_empresa é a razão social. Não invente dados.';
+
+    const content = [{ type:'text', text: prompt }];
+    for (const a of arquivos) {
+      if (a && a.dataUrl && /^data:image\//.test(a.dataUrl)) content.push({ type:'image_url', image_url:{ url:a.dataUrl } });
+    }
+    if (content.length === 1) return res.status(400).json({ ok:false, erro:'Envie imagens (foto/print). PDF ainda não é lido — tire um print da tela.' });
+
+    const resp = await axios.post('https://api.openai.com/v1/chat/completions', {
+      model: 'gpt-4o-mini',
+      messages: [{ role:'user', content }],
+      response_format: { type:'json_object' },
+      temperature: 0
+    }, {
+      headers: { 'Authorization': 'Bearer ' + OPENAI_API_KEY, 'Content-Type': 'application/json' },
+      timeout: 90000
+    });
+
+    let dados = {};
+    try { dados = JSON.parse(resp.data.choices[0].message.content || '{}'); } catch (e) { dados = {}; }
+    if (dados.cnpj) dados.cnpj = String(dados.cnpj).replace(/\D/g,'');
+    if (dados.cpf)  dados.cpf  = String(dados.cpf).replace(/\D/g,'');
+    if (dados.uf)   dados.uf   = String(dados.uf).toUpperCase().slice(0,2);
+
+    res.json({ ok:true, dados });
+  } catch (e) {
+    const det = e.response?.data?.error?.message || e.response?.data || e.message;
+    res.status(500).json({ ok:false, etapa:'ler-documentos', erro: typeof det==='string'?det:JSON.stringify(det) });
+  }
+});
+
 app.listen(PORT, () => console.log('andro motor fiscal rodando na porta ' + PORT));
