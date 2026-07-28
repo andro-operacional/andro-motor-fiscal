@@ -215,7 +215,7 @@ function autorizado(req, res) {
 
 /* ---- Rotas ---- */
 app.get('/', (_req, res) =>
-  res.json({ ok: true, servico: 'andro motor fiscal', versao: 'v3-docs-contrato', tem_openai: !!process.env.OPENAI_API_KEY, tem_zapsign: !!process.env.ZAPSIGN_TOKEN, hora: new Date().toISOString() })
+  res.json({ ok: true, servico: 'andro motor fiscal', versao: 'v4', tem_openai: !!process.env.OPENAI_API_KEY, tem_zapsign: !!process.env.ZAPSIGN_TOKEN, zapsign_sandbox: (process.env.ZAPSIGN_SANDBOX !== 'false'), hora: new Date().toISOString() })
 );
 
 // 1) Testa SÓ a autenticação no Serpro (certificado + chaves)
@@ -380,6 +380,8 @@ app.post('/gerar-contrato', async (req, res) => {
       template_id: modelo,
       signer_name: c.assinante || c.contato || c.nome || 'Contratante',
       lang: 'pt-br',
+      // sandbox = modo teste (sem custo). Vira 'false' quando contratar o plano de API do ZapSign.
+      sandbox: (process.env.ZAPSIGN_SANDBOX !== 'false'),
       data
     };
     if (c.email) payload.signer_email = c.email;
