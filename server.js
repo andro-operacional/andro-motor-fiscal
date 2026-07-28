@@ -422,7 +422,7 @@ app.post('/ler-documentos', async (req, res) => {
 
     const prompt = 'Você lê documentos brasileiros (cartão CNPJ, contrato social, RG, CNH, comprovante de endereço, planilhas) e extrai dados do cliente e do sócio que assina. '
       + 'Responda SOMENTE um JSON com estas chaves (string vazia se não encontrar): '
-      + '{"nome_empresa":"","cnpj":"","nome_socio":"","cpf":"","rg":"","nacionalidade":"","funcao":"","email":"","telefone":"","rua":"","numero":"","bairro":"","cidade":"","uf":"","cep":"","orcamento":[]}. '
+      + '{"nome_empresa":"","cnpj":"","nome_socio":"","cpf":"","rg":"","nacionalidade":"","funcao":"","email":"","telefone":"","rua":"","numero":"","bairro":"","cidade":"","uf":"","cep":"","orcamento":[],"orcamento_obs":""}. '
       + 'REGRAS IMPORTANTES: '
       + '- CPF tem EXATAMENTE 11 dígitos (formato 000.000.000-00). RG é OUTRO número (geralmente 7 a 9 dígitos, às vezes com letra). NUNCA coloque o número do RG no campo cpf. Se o número tiver menos de 11 dígitos, ele é RG, não CPF. '
       + '- Num documento de identidade (RG/CNH) costumam aparecer OS DOIS números (RG e CPF) — separe cada um no seu campo. Se não tiver certeza de qual é o CPF, deixe cpf vazio. '
@@ -430,6 +430,7 @@ app.post('/ler-documentos', async (req, res) => {
       + '- ATENÇÃO num ORÇAMENTO/PROPOSTA: existe o EMISSOR (a contabilidade que faz a proposta — ex.: ANDRO, ANDRO DIGITAL, androconsult.com.br, CNPJ 37.922.384/0001-00) e o DESTINATÁRIO (o cliente que vai contratar). Extraia SEMPRE os dados do CLIENTE/DESTINATÁRIO. NUNCA use nome, e-mail, telefone ou endereço do EMISSOR (ANDRO). Se um dado for claramente da ANDRO/androconsult, ignore e deixe vazio. '
       + '- SE houver um ORÇAMENTO/PROPOSTA (ex.: Conta Azul) com tabela de serviços e valores, preencha "orcamento" com uma linha por serviço: {"servico":"nome do produto/serviço","valor":numero,"tipo":"mensal ou imediato"}. '
       + '  Use tipo "mensal" quando o detalhe disser "Pagamento mensal"; use "imediato" quando disser "Pagamento Único"/"pagamento único"/à vista. valor só número (ex.: 697.00). Se não houver orçamento, deixe orcamento como lista vazia. '
+      + '  Em orcamento_obs coloque observações do orçamento (ex.: bônus, validade da proposta, condições especiais), se houver. '
       + 'Não invente dados.';
 
     const content = [{ type:'text', text: prompt }];
