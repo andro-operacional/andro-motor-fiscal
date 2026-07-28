@@ -427,6 +427,7 @@ app.post('/ler-documentos', async (req, res) => {
       + '- CPF tem EXATAMENTE 11 dígitos (formato 000.000.000-00). RG é OUTRO número (geralmente 7 a 9 dígitos, às vezes com letra). NUNCA coloque o número do RG no campo cpf. Se o número tiver menos de 11 dígitos, ele é RG, não CPF. '
       + '- Num documento de identidade (RG/CNH) costumam aparecer OS DOIS números (RG e CPF) — separe cada um no seu campo. Se não tiver certeza de qual é o CPF, deixe cpf vazio. '
       + '- cnpj tem 14 dígitos; uf com 2 letras; nome_socio é a pessoa física (sócio/representante), nome_empresa é a razão social. '
+      + '- ATENÇÃO num ORÇAMENTO/PROPOSTA: existe o EMISSOR (a contabilidade que faz a proposta — ex.: ANDRO, ANDRO DIGITAL, androconsult.com.br, CNPJ 37.922.384/0001-00) e o DESTINATÁRIO (o cliente que vai contratar). Extraia SEMPRE os dados do CLIENTE/DESTINATÁRIO. NUNCA use nome, e-mail, telefone ou endereço do EMISSOR (ANDRO). Se um dado for claramente da ANDRO/androconsult, ignore e deixe vazio. '
       + '- SE houver um ORÇAMENTO/PROPOSTA (ex.: Conta Azul) com tabela de serviços e valores, preencha "orcamento" com uma linha por serviço: {"servico":"nome do produto/serviço","valor":numero,"tipo":"mensal ou imediato"}. '
       + '  Use tipo "mensal" quando o detalhe disser "Pagamento mensal"; use "imediato" quando disser "Pagamento Único"/"pagamento único"/à vista. valor só número (ex.: 697.00). Se não houver orçamento, deixe orcamento como lista vazia. '
       + 'Não invente dados.';
@@ -460,6 +461,11 @@ app.post('/ler-documentos', async (req, res) => {
     if (dados.uf)   dados.uf   = String(dados.uf).toUpperCase().slice(0,2);
     // se o "cpf" não tiver 11 dígitos, é RG mal classificado: move pra RG e limpa o CPF
     if (dados.cpf && dados.cpf.length !== 11) { if (!dados.rg) dados.rg = dados.cpf; dados.cpf = ''; }
+    // segurança: nunca deixar entrar os dados da própria ANDRO (emissor do orçamento)
+    if (/androconsult|andro\s*digital/i.test(String(dados.email))) dados.email = '';
+    if (/\bandro\b/i.test(String(dados.nome_empresa)) && /37\.?922\.?384/.test(String(dados.cnpj))) { dados.nome_empresa = ''; dados.cnpj = ''; }
+    if (String(dados.cnpj).replace(/\D/g,'') === '37922384000100') { dados.cnpj = ''; dados.nome_empresa = ''; }
+    if (/^leandro\s+mendes$/i.test(String(dados.nome_socio||'').trim())) dados.nome_socio = '';
     if (Array.isArray(dados.orcamento)) {
       dados.orcamento = dados.orcamento.map(o => ({
         servico: String((o && o.servico) || '').trim(),
