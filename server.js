@@ -422,8 +422,14 @@ app.post('/ler-documentos', async (req, res) => {
 
     const prompt = 'Você lê documentos brasileiros (cartão CNPJ, contrato social, RG, CNH, comprovante de endereço, planilhas) e extrai dados do cliente e do sócio que assina. '
       + 'Responda SOMENTE um JSON com estas chaves (string vazia se não encontrar): '
-      + '{"nome_empresa":"","cnpj":"","nome_socio":"","cpf":"","rg":"","nacionalidade":"","funcao":"","email":"","telefone":"","rua":"","numero":"","bairro":"","cidade":"","uf":"","cep":""}. '
-      + 'Regras: cnpj e cpf só com números; uf com 2 letras; nome_socio é a pessoa física (sócio/representante), nome_empresa é a razão social. Não invente dados.';
+      + '{"nome_empresa":"","cnpj":"","nome_socio":"","cpf":"","rg":"","nacionalidade":"","funcao":"","email":"","telefone":"","rua":"","numero":"","bairro":"","cidade":"","uf":"","cep":"","orcamento":[]}. '
+      + 'REGRAS IMPORTANTES: '
+      + '- CPF tem EXATAMENTE 11 dígitos (formato 000.000.000-00). RG é OUTRO número (geralmente 7 a 9 dígitos, às vezes com letra). NUNCA coloque o número do RG no campo cpf. Se o número tiver menos de 11 dígitos, ele é RG, não CPF. '
+      + '- Num documento de identidade (RG/CNH) costumam aparecer OS DOIS números (RG e CPF) — separe cada um no seu campo. Se não tiver certeza de qual é o CPF, deixe cpf vazio. '
+      + '- cnpj tem 14 dígitos; uf com 2 letras; nome_socio é a pessoa física (sócio/representante), nome_empresa é a razão social. '
+      + '- SE houver um ORÇAMENTO/PROPOSTA (ex.: Conta Azul) com tabela de serviços e valores, preencha "orcamento" com uma linha por serviço: {"servico":"nome do produto/serviço","valor":numero,"tipo":"mensal ou imediato"}. '
+      + '  Use tipo "mensal" quando o detalhe disser "Pagamento mensal"; use "imediato" quando disser "Pagamento Único"/"pagamento único"/à vista. valor só número (ex.: 697.00). Se não houver orçamento, deixe orcamento como lista vazia. '
+      + 'Não invente dados.';
 
     const content = [{ type:'text', text: prompt }];
     for (const it of itens) {
@@ -450,7 +456,17 @@ app.post('/ler-documentos', async (req, res) => {
     try { dados = JSON.parse(resp.data.choices[0].message.content || '{}'); } catch (e) { dados = {}; }
     if (dados.cnpj) dados.cnpj = String(dados.cnpj).replace(/\D/g,'');
     if (dados.cpf)  dados.cpf  = String(dados.cpf).replace(/\D/g,'');
+    if (dados.rg)   dados.rg   = String(dados.rg).trim();
     if (dados.uf)   dados.uf   = String(dados.uf).toUpperCase().slice(0,2);
+    // se o "cpf" não tiver 11 dígitos, é RG mal classificado: move pra RG e limpa o CPF
+    if (dados.cpf && dados.cpf.length !== 11) { if (!dados.rg) dados.rg = dados.cpf; dados.cpf = ''; }
+    if (Array.isArray(dados.orcamento)) {
+      dados.orcamento = dados.orcamento.map(o => ({
+        servico: String((o && o.servico) || '').trim(),
+        valor: String((o && o.valor) != null ? o.valor : '').replace(/[^\d.,]/g,''),
+        tipo: (o && /imediat|unic|vista/i.test(String(o.tipo))) ? 'imediato' : 'mensal'
+      })).filter(o => o.servico || o.valor);
+    } else { dados.orcamento = []; }
 
     res.json({ ok:true, dados });
   } catch (e) {
