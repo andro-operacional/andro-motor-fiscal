@@ -46,6 +46,10 @@ const CX_INDICADOR = process.env.CX_INDICADOR || 'INNOVAMSG63';          // indi
 const CX_LISTA     = process.env.CX_LISTA     || 'MSGCONTRIBUINTE61';    // lista as mensagens (verbo Consultar)
 const CX_DETALHE   = process.env.CX_DETALHE   || 'MSGDETALHAMENTO62';    // conteúdo de UMA mensagem por isn (verbo Consultar)
 const CX_MAX_MSGS  = Number(process.env.CX_MAX_MSGS || 8);               // qtde máx. de mensagens que baixamos por cliente
+/* SITFIS — Relatório de Situação Fiscal (assíncrono: solicita protocolo, depois emite o PDF) */
+const SITFIS_SISTEMA  = process.env.SITFIS_SISTEMA  || 'SITFIS';
+const SITFIS_SOLICITAR= process.env.SITFIS_SOLICITAR|| 'SOLICITARPROTOCOLO91';
+const SITFIS_EMITIR   = process.env.SITFIS_EMITIR   || 'RELATORIOSITUACAOFISCAL92';
 
 /* ---- Certificado A1 (mTLS) ---- */
 let _agent = null;
@@ -204,6 +208,38 @@ async function lerCaixaPostal(cnpj, nomeCliente) {
   return { novas: temNovas === true, qtde: msgs.length, assuntos, anexo, listaErro };
 }
 
+/* ---- Chamada genérica que aceita QUALQUER idSistema (a "chamar" acima é fixa na Caixa Postal) ---- */
+async function chamarSistema(idSistema, verbo, idServico, cnpjCliente, dados = {}) {
+  const tok = await getToken();
+  const body = {
+    contratante:      { numero: ANDRO_CNPJ, tipo: 2 },
+    autorPedidoDados: { numero: ANDRO_CNPJ, tipo: 2 },
+    contribuinte:     { numero: String(cnpjCliente).replace(/\D/g, ''), tipo: 2 },
+    pedidoDados: { idSistema, idServico, versaoSistema: '1.0', dados: JSON.stringify(dados) },
+  };
+  const { data } = await axios.post(
+    'https://gateway.apiserpro.serpro.gov.br/integra-contador/v1/' + verbo, body,
+    { httpsAgent: getAgent(), headers: { Authorization: `Bearer ${tok.access_token}`, jwt_token: tok.jwt_token, 'content-type': 'application/json' }, timeout: 60000 }
+  );
+  return data;
+}
+
+/* ---- SITFIS: Relatório de Situação Fiscal (PDF em base64) ---- */
+async function relatorioSituacaoFiscal(cnpj) {
+  // 1) solicita o protocolo
+  const sol = parseDados(await chamarSistema(SITFIS_SISTEMA, 'Apoiar', SITFIS_SOLICITAR, cnpj));
+  const protocolo = sol.protocoloRelatorio || sol.protocolo || (Array.isArray(sol.conteudo) && sol.conteudo[0] && sol.conteudo[0].protocoloRelatorio);
+  if (!protocolo) throw new Error('SITFIS não retornou protocolo: ' + JSON.stringify(sol).slice(0, 220));
+  // 2) emite o relatório (pode vir "em processamento" — tenta algumas vezes)
+  for (let i = 0; i < 6; i++) {
+    const emi = parseDados(await chamarSistema(SITFIS_SISTEMA, 'Emitir', SITFIS_EMITIR, cnpj, { protocoloRelatorio: protocolo }));
+    const pdf = emi.pdf || emi.arquivo || (Array.isArray(emi.conteudo) && emi.conteudo[0] && (emi.conteudo[0].pdf || emi.conteudo[0].arquivo));
+    if (pdf) return pdf;                         // base64 do PDF pronto
+    await new Promise(r => setTimeout(r, 3000)); // ainda processando: espera e tenta de novo
+  }
+  throw new Error('SITFIS: relatório não ficou pronto a tempo (tente de novo em instantes).');
+}
+
 /* ---- Proteção simples dos endpoints ---- */
 function autorizado(req, res) {
   if (!MOTOR_SECRET || req.get('x-motor-secret') !== MOTOR_SECRET) {
@@ -239,6 +275,19 @@ app.post('/testar-cliente', async (req, res) => {
     res.json({ ok: true, cnpj, tem_mensagem_nova: r.novas, mensagens_baixadas: r.qtde, assuntos: r.assuntos, documento_gerado: r.anexo ? r.anexo.nome : null, lista_erro: r.listaErro || null });
   } catch (e) {
     res.status(500).json({ ok: false, cnpj, etapa: 'consulta', erro: e.response?.data || e.message });
+  }
+});
+
+// 2b) Testa o Relatório de Situação Fiscal (SITFIS) de UM cliente (body: { "cnpj": "..." })
+app.post('/testar-situacao-fiscal', async (req, res) => {
+  if (!autorizado(req, res)) return;
+  const cnpj = String(req.body?.cnpj || '').replace(/\D/g, '');
+  if (!cnpj) return res.status(400).json({ erro: 'informe o cnpj: { "cnpj": "00000000000000" }' });
+  try {
+    const pdf = await relatorioSituacaoFiscal(cnpj);
+    res.json({ ok: true, cnpj, tem_pdf: !!pdf, tamanho_base64: pdf ? pdf.length : 0 });
+  } catch (e) {
+    res.status(500).json({ ok: false, cnpj, etapa: 'situacao-fiscal', erro: e.response?.data || e.message });
   }
 });
 
@@ -481,6 +530,31 @@ app.post('/ler-documentos', async (req, res) => {
   } catch (e) {
     const det = e.response?.data?.error?.message || e.response?.data || e.message;
     res.status(500).json({ ok:false, etapa:'ler-documentos', erro: typeof det==='string'?det:JSON.stringify(det) });
+  }
+});
+
+/* Valida se um documento anexado é do tipo esperado (formulário público de novo cliente).
+   Público (sem x-motor-secret). Nunca bloqueia o envio: em qualquer dúvida/erro responde ok:true. */
+app.post('/validar-documento', async (req, res) => {
+  try {
+    const imagem = req.body && req.body.imagem;
+    const tipoEsperado = (req.body && req.body.tipoEsperado) || 'documento';
+    if (!OPENAI_API_KEY) return res.json({ ok: true, motivo: 'IA não configurada' });
+    if (!imagem || !/^data:image\//.test(String(imagem))) return res.json({ ok: true, motivo: 'sem imagem para checar' });
+    const resp = await axios.post('https://api.openai.com/v1/chat/completions', {
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: [
+        { type: 'text', text: 'Você confere documentos brasileiros. O documento esperado é: "' + tipoEsperado + '". A imagem enviada corresponde a esse tipo de documento? Responda SOMENTE um JSON: {"ok": true/false, "tipo": "o que a imagem realmente parece ser", "motivo": "frase curta"}. Use ok:true se a imagem for esse documento (mesmo que a foto esteja um pouco tremida ou parcial). Use ok:false só se for claramente OUTRA coisa (uma foto aleatória, um print de conversa, ou um documento de tipo diferente do esperado).' },
+        { type: 'image_url', image_url: { url: imagem } }
+      ] }],
+      response_format: { type: 'json_object' },
+      temperature: 0,
+      max_tokens: 200
+    }, { headers: { 'Authorization': 'Bearer ' + OPENAI_API_KEY, 'Content-Type': 'application/json' }, timeout: 60000 });
+    let j = {}; try { j = JSON.parse(resp.data.choices[0].message.content || '{}'); } catch (e) { j = {}; }
+    res.json({ ok: j.ok !== false, tipo: j.tipo || '', motivo: j.motivo || '' });
+  } catch (e) {
+    res.json({ ok: true, motivo: 'não consegui analisar agora' });
   }
 });
 
