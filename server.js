@@ -291,6 +291,19 @@ app.post('/testar-situacao-fiscal', async (req, res) => {
   }
 });
 
+// 2c) Retorna o PDF (base64) do Relatório de Situação Fiscal de UM cliente — usado pelo sistema pra salvar no Drive
+app.post('/situacao-fiscal', async (req, res) => {
+  if (!autorizado(req, res)) return;
+  const cnpj = String(req.body?.cnpj || '').replace(/\D/g, '');
+  if (!cnpj) return res.status(400).json({ ok: false, erro: 'informe o cnpj' });
+  try {
+    const pdf = await relatorioSituacaoFiscal(cnpj);
+    res.json({ ok: true, cnpj, pdf });
+  } catch (e) {
+    res.status(500).json({ ok: false, cnpj, erro: e.response?.data?.mensagens?.[0]?.texto || e.response?.data || e.message });
+  }
+});
+
 /* ---- Extrai "tem mensagem nova?" da resposta do indicador (formato do Serpro varia) ---- */
 function lerIndicadorNovas(resp) {
   // a resposta traz um campo "dados" que normalmente é um JSON em texto
