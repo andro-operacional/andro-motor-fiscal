@@ -343,9 +343,9 @@ app.post('/rodar', async (req, res) => {
         c.fiscalPor = 'Serpro (automático)';
         c.fiscalSituacao = r.novas ? 'Mensagem nova' : 'Regular';
         if (r.assuntos && r.assuntos.length) c.fiscalObs = r.assuntos.slice(0, 5).join(' · ');
-        // substitui o documento automático anterior, mantendo anexos manuais
+        // Caixa Postal: guardamos só o indicador (sim/não). NÃO anexamos o documento da mensagem.
+        // (limpa documentos automáticos antigos, mantém anexos manuais)
         c.fiscalAnexos = (Array.isArray(c.fiscalAnexos) ? c.fiscalAnexos : []).filter(a => !a.auto);
-        if (r.anexo) c.fiscalAnexos.push(r.anexo);
         verificados++;
         if (r.novas) comMensagem++;
       } catch (e) {
