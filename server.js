@@ -251,7 +251,7 @@ function autorizado(req, res) {
 
 /* ---- Rotas ---- */
 app.get('/', (_req, res) =>
-  res.json({ ok: true, servico: 'andro motor fiscal', versao: 'v4', tem_openai: !!process.env.OPENAI_API_KEY, tem_zapsign: !!process.env.ZAPSIGN_TOKEN, zapsign_sandbox: (process.env.ZAPSIGN_SANDBOX !== 'false'), hora: new Date().toISOString() })
+  res.json({ ok: true, servico: 'andro motor fiscal', versao: 'v5-sitfis', tem_openai: !!process.env.OPENAI_API_KEY, tem_zapsign: !!process.env.ZAPSIGN_TOKEN, zapsign_sandbox: (process.env.ZAPSIGN_SANDBOX !== 'false'), hora: new Date().toISOString() })
 );
 
 // 1) Testa SÓ a autenticação no Serpro (certificado + chaves)
