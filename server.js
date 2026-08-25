@@ -49,7 +49,7 @@ const CX_MAX_MSGS  = Number(process.env.CX_MAX_MSGS || 8);               // qtde
 /* SITFIS — Relatório de Situação Fiscal (assíncrono: solicita protocolo, depois emite o PDF) */
 const SITFIS_SISTEMA  = process.env.SITFIS_SISTEMA  || 'SITFIS';
 const SITFIS_SOLICITAR= process.env.SITFIS_SOLICITAR|| 'SOLICITARPROTOCOLO91';
-const SITFIS_EMITIR   = process.env.SITFIS_EMITIR   || 'RELATORIOSITUACAOFISCAL92';
+const SITFIS_EMITIR   = process.env.SITFIS_EMITIR   || 'RELATORIOSITFIS92';
 
 /* ---- Certificado A1 (mTLS) ---- */
 let _agent = null;
@@ -209,13 +209,13 @@ async function lerCaixaPostal(cnpj, nomeCliente) {
 }
 
 /* ---- Chamada genérica que aceita QUALQUER idSistema (a "chamar" acima é fixa na Caixa Postal) ---- */
-async function chamarSistema(idSistema, verbo, idServico, cnpjCliente, dados = {}) {
+async function chamarSistema(idSistema, verbo, idServico, cnpjCliente, dados = {}, versaoSistema = '1.0') {
   const tok = await getToken();
   const body = {
     contratante:      { numero: ANDRO_CNPJ, tipo: 2 },
     autorPedidoDados: { numero: ANDRO_CNPJ, tipo: 2 },
     contribuinte:     { numero: String(cnpjCliente).replace(/\D/g, ''), tipo: 2 },
-    pedidoDados: { idSistema, idServico, versaoSistema: '1.0', dados: JSON.stringify(dados) },
+    pedidoDados: { idSistema, idServico, versaoSistema, dados: JSON.stringify(dados) },
   };
   const { data } = await axios.post(
     'https://gateway.apiserpro.serpro.gov.br/integra-contador/v1/' + verbo, body,
@@ -232,7 +232,7 @@ async function relatorioSituacaoFiscal(cnpj) {
   if (!protocolo) throw new Error('SITFIS não retornou protocolo: ' + JSON.stringify(sol).slice(0, 220));
   // 2) emite o relatório (pode vir "em processamento" — tenta algumas vezes)
   for (let i = 0; i < 6; i++) {
-    const emi = parseDados(await chamarSistema(SITFIS_SISTEMA, 'Emitir', SITFIS_EMITIR, cnpj, { protocoloRelatorio: protocolo }));
+    const emi = parseDados(await chamarSistema(SITFIS_SISTEMA, 'Emitir', SITFIS_EMITIR, cnpj, { protocoloRelatorio: protocolo }, '2.0'));
     const pdf = emi.pdf || emi.arquivo || (Array.isArray(emi.conteudo) && emi.conteudo[0] && (emi.conteudo[0].pdf || emi.conteudo[0].arquivo));
     if (pdf) return pdf;                         // base64 do PDF pronto
     await new Promise(r => setTimeout(r, 3000)); // ainda processando: espera e tenta de novo
