@@ -251,7 +251,7 @@ function autorizado(req, res) {
 
 /* ---- Rotas ---- */
 app.get('/', (_req, res) =>
-  res.json({ ok: true, servico: 'andro motor fiscal', versao: 'v5-sitfis', tem_openai: !!process.env.OPENAI_API_KEY, tem_zapsign: !!process.env.ZAPSIGN_TOKEN, zapsign_sandbox: (process.env.ZAPSIGN_SANDBOX !== 'false'), hora: new Date().toISOString() })
+  res.json({ ok: true, servico: 'andro motor fiscal', versao: 'v6-zapsign', tem_openai: !!process.env.OPENAI_API_KEY, tem_zapsign: !!process.env.ZAPSIGN_TOKEN, zapsign_sandbox: (process.env.ZAPSIGN_SANDBOX !== 'false'), hora: new Date().toISOString() })
 );
 
 // 1) Testa SÓ a autenticação no Serpro (certificado + chaves)
@@ -436,7 +436,8 @@ app.post('/gerar-contrato', async (req, res) => {
       'vencimento do contrato': c.contratoFim ? String(c.contratoFim).split('-').reverse().join('/') : '',
       'Vencimento de Honorário': c.vencHonorario
     };
-    const data = Object.keys(M).filter(k => M[k]).map(k => ({ de: k, para: String(M[k]) }));
+    /* ZapSign substitui a variável escrita como {{CAMPO}} no modelo DOCX pelo valor */
+    const data = Object.keys(M).filter(k => M[k]).map(k => ({ de: '{{' + k + '}}', para: String(M[k]) }));
 
     const payload = {
       template_id: modelo,
