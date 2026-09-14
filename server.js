@@ -545,8 +545,15 @@ app.post('/ler-documentos', async (req, res) => {
       + '- cnpj tem 14 dígitos; uf com 2 letras; nome_socio é a pessoa física (sócio/representante), nome_empresa é a razão social. '
       + '- ATENÇÃO num ORÇAMENTO/PROPOSTA: existe o EMISSOR (a contabilidade que faz a proposta — ex.: ANDRO, ANDRO DIGITAL, androconsult.com.br, CNPJ 37.922.384/0001-00) e o DESTINATÁRIO (o cliente que vai contratar). Extraia SEMPRE os dados do CLIENTE/DESTINATÁRIO. NUNCA use nome, e-mail, telefone ou endereço do EMISSOR (ANDRO). Se um dado for claramente da ANDRO/androconsult, ignore e deixe vazio. '
       + '- SE houver um ORÇAMENTO/PROPOSTA (ex.: Conta Azul) com tabela de serviços e valores, preencha "orcamento" com uma linha por serviço: {"servico":"nome do produto/serviço","valor":numero,"tipo":"mensal ou imediato"}. '
-      + '  Use tipo "mensal" quando o detalhe disser "Pagamento mensal"; use "imediato" quando disser "Pagamento Único"/"pagamento único"/à vista. valor só número (ex.: 697.00). Se não houver orçamento, deixe orcamento como lista vazia. '
-      + '  Em orcamento_obs coloque observações do orçamento (ex.: bônus, validade da proposta, condições especiais), se houver. '
+      + '  === COMO LER A TABELA (MUITO IMPORTANTE — NÃO ERRE O ALINHAMENTO) === '
+      + '  1) Cada serviço é uma linha da tabela. O VALOR de um serviço é o número que está NA MESMA LINHA do nome do serviço, na coluna de valor (geralmente a última coluna, "Subtotal" ou "Valor"). Se aparecerem dois números iguais na linha (Valor unitário e Subtotal), use o Subtotal (o último). '
+      + '  2) O nome do serviço pode QUEBRAR em 2 ou 3 linhas (o resto do nome vem na(s) linha(s) seguinte(s), SEM número). Junte essas continuações no mesmo serviço — NÃO crie um serviço novo pra uma linha que não tem valor próprio. '
+      + '  3) NUNCA desloque valores entre linhas. O valor da linha 1 é do serviço 1, o da linha 2 é do serviço 2, e assim por diante. '
+      + '  4) IGNORE COMPLETAMENTE as linhas de resumo — elas NÃO são serviços: "Total", "Subtotal geral", "Desconto"/"Descontos", "Acréscimo", "Valor líquido", "Valor total", "Frete". O número do DESCONTO nunca é o valor de um serviço. '
+      + '  5) A quantidade (coluna "Qt."/"Qtd", ex.: 1) e o número do item (ex.: "2 -", "23 -", "29 -") NÃO são o valor. Ignore-os. '
+      + '  6) A quantidade de serviços que você retornar deve ser igual à quantidade de linhas de serviço da tabela (sem contar Total/Descontos/Valor líquido). '
+      + '  Use tipo "mensal" para honorário/serviço recorrente (detalhe diz "Pagamento mensal", "por mês", "/mês", "mensal", "Solução Contábil", "honorário"); use "imediato" para serviço único/pontual ("Pagamento Único", "à vista", abertura, alteração/legalização, certificado digital, avulsos). valor só número (ex.: 497.00). Se não houver orçamento, deixe orcamento como lista vazia. '
+      + '  Em orcamento_obs coloque observações do orçamento (ex.: OBS do rodapé, bônus, validade da proposta, condições especiais, desconto aplicado), se houver. '
       + 'Não invente dados.';
 
     const content = [{ type:'text', text: prompt }];
