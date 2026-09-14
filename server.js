@@ -251,7 +251,7 @@ function autorizado(req, res) {
 
 /* ---- Rotas ---- */
 app.get('/', (_req, res) =>
-  res.json({ ok: true, servico: 'andro motor fiscal', versao: 'v6-zapsign', tem_openai: !!process.env.OPENAI_API_KEY, tem_zapsign: !!process.env.ZAPSIGN_TOKEN, zapsign_sandbox: (process.env.ZAPSIGN_SANDBOX !== 'false'), hora: new Date().toISOString() })
+  res.json({ ok: true, servico: 'andro motor fiscal', versao: 'v7-multisign', tem_openai: !!process.env.OPENAI_API_KEY, tem_zapsign: !!process.env.ZAPSIGN_TOKEN, zapsign_sandbox: (process.env.ZAPSIGN_SANDBOX !== 'false'), hora: new Date().toISOString() })
 );
 
 // 1) Testa SÓ a autenticação no Serpro (certificado + chaves)
@@ -398,6 +398,30 @@ function dataPtBR(d){
 }
 function fmtBRL(v){ const n = Number(String(v).replace(/\./g,'').replace(',','.')) || 0; return n.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
 
+/* valor por extenso em reais (ex.: 397 -> "trezentos e noventa e sete reais") */
+function extensoReais(valor){
+  let s = String(valor==null?'':valor).trim(); if(!s) return '';
+  if (s.indexOf(',')>=0) s = s.replace(/\./g,'').replace(',','.');
+  const num = Number(s); if(!isFinite(num)) return '';
+  let n = Math.floor(Math.abs(num));
+  const cent = Math.round((Math.abs(num)-n)*100);
+  const U=['zero','um','dois','três','quatro','cinco','seis','sete','oito','nove','dez','onze','doze','treze','quatorze','quinze','dezesseis','dezessete','dezoito','dezenove'];
+  const D=['','','vinte','trinta','quarenta','cinquenta','sessenta','setenta','oitenta','noventa'];
+  const C=['','cento','duzentos','trezentos','quatrocentos','quinhentos','seiscentos','setecentos','oitocentos','novecentos'];
+  function tres(x){ if(x===0) return ''; if(x===100) return 'cem'; let p=[]; const c=Math.floor(x/100); if(c) p.push(C[c]); const r=x%100; if(r){ if(r<20) p.push(U[r]); else { let dz=D[Math.floor(r/10)]; if(r%10) dz+=' e '+U[r%10]; p.push(dz); } } return p.join(' e '); }
+  function porExtenso(v){
+    if(v===0) return 'zero';
+    const mi=Math.floor(v/1000000); const mil=Math.floor((v%1000000)/1000); const ce=v%1000;
+    let out=[];
+    if(mi) out.push(tres(mi)+(mi===1?' milhão':' milhões'));
+    if(mil) out.push(mil===1?'mil':tres(mil)+' mil');
+    if(ce) out.push(tres(ce));
+    return out.join(' e ');
+  }
+  let txt = porExtenso(n) + (n===1?' real':' reais');
+  if(cent>0) txt += ' e ' + porExtenso(cent) + (cent===1?' centavo':' centavos');
+  return txt;
+}
 app.post('/gerar-contrato', async (req, res) => {
   try {
     if (!ZAPSIGN_TOKEN) return res.status(500).json({ ok:false, erro:'Falta o ZAPSIGN_TOKEN nas variáveis do Render.' });
@@ -414,8 +438,9 @@ app.post('/gerar-contrato', async (req, res) => {
 
     const hoje = dataPtBR(new Date());
     const cidUf = [c.endCidade, c.endEstado].filter(Boolean).join(' - ');
-    const valorFmt = fmtBRL(c.valor);
-    const extenso = valorExtenso || '';
+    const valBase = (c.valorContrato && String(c.valorContrato).trim()) ? c.valorContrato : c.valor;  // "Valor DESTE contrato"
+    const valorFmt = fmtBRL(valBase);
+    const extenso = valorExtenso || extensoReais(valBase);
 
     // mapa: cobre os nomes dos DOIS modelos (o ZapSign ignora o que não existir no modelo escolhido)
     const M = {
@@ -456,15 +481,41 @@ app.post('/gerar-contrato', async (req, res) => {
       timeout: 60000
     });
     const d = zap.data || {};
+    const docToken = d.token || '';
     const link = (d.signers && d.signers[0] && (d.signers[0].sign_url || d.signers[0].signer_url)) || d.sign_url || '';
 
-    // grava o link de volta no cliente
-    try {
-      c.contratoLink = link; c.contratoEm = Date.now(); c.contratoToken = d.token || '';
-      await sb.from('app_state').upsert({ id:'main', data: db, updated_at: new Date().toISOString() });
-    } catch (e) { /* se falhar a gravação, ainda devolvemos o link */ }
+    // ---- signatários: 1º = cliente titular (já criado); + sócios; + andro (Leandro) ----
+    const signatarios = [{ nome: (c.assinante||c.contato||c.nome||'Cliente'), papel: 'Cliente (titular)', link }];
 
-    res.json({ ok:true, link, doc_token: d.token || '', campos_enviados: data.length });
+    async function adicionarSignatario(p, papel){
+      if(!p || !(p.nome||'').trim()) return;
+      const body = { name: String(p.nome).trim(), send_automatic_email: false, send_automatic_whatsapp: false };
+      if(p.email) body.email = String(p.email).trim();
+      const tl = String(p.whats||p.telefone||'').replace(/\D/g,'');
+      if(tl.length>=10){ body.phone_country='55'; body.phone_number=tl; }
+      const cpfn = String(p.cpf||'').replace(/\D/g,''); if(cpfn.length===11) body.cpf = cpfn;
+      try{
+        const r = await axios.post('https://api.zapsign.com.br/api/v1/docs/'+docToken+'/add-signer/', body, {
+          headers:{ 'Authorization':'Bearer '+ZAPSIGN_TOKEN, 'Content-Type':'application/json' }, timeout: 60000
+        });
+        const su = r.data && (r.data.sign_url || (r.data.token && ('https://app.zapsign.com.br/verificar/'+r.data.token)));
+        if(su) signatarios.push({ nome: body.name, papel, link: su });
+      }catch(e){ signatarios.push({ nome: body.name, papel, link:'', erro: (e.response?.data?.message||e.message||'falha') }); }
+    }
+
+    // sócios adicionais cadastrados no cliente
+    const socios = Array.isArray(c.signatarios) ? c.signatarios : [];
+    for(const s of socios){ await adicionarSignatario(s, 'Sócio'); }
+    // andro (assinante fixo definido em Configuração)
+    if(db.androSigner && (db.androSigner.nome||'').trim()){ await adicionarSignatario(db.androSigner, 'andro (contratada)'); }
+
+    // grava de volta no cliente
+    try {
+      c.contratoLink = link; c.contratoEm = Date.now(); c.contratoToken = docToken; c.contratoSignatarios = signatarios;
+      await sb.from('app_state').upsert({ id:'main', data: db, updated_at: new Date().toISOString() });
+    } catch (e) { /* se falhar a gravação, ainda devolvemos os links */ }
+
+    res.json({ ok:true, link, signatarios, doc_token: docToken, campos_enviados: data.length });
   } catch (e) {
     const det = e.response?.data || e.message;
     res.status(500).json({ ok:false, etapa:'gerar-contrato', erro: typeof det==='string'?det:JSON.stringify(det) });
