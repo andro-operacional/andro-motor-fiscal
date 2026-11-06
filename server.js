@@ -630,4 +630,31 @@ app.post('/validar-documento', async (req, res) => {
   }
 });
 
+/* Valida documento de ADMISSÃO de funcionário: checa TIPO e LEGIBILIDADE.
+   Público. Retorna {ok, legivel, tipo, motivo}. Em erro/infra, nunca bloqueia (legivel:true). */
+app.post('/validar-documento-adm', async (req, res) => {
+  try {
+    const imagem = req.body && req.body.imagem;
+    const tipoEsperado = (req.body && req.body.tipoEsperado) || 'documento';
+    if (!OPENAI_API_KEY) return res.json({ ok: true, legivel: true, motivo: 'IA não configurada' });
+    if (!imagem || !/^data:image\//.test(String(imagem))) return res.json({ ok: true, legivel: true, motivo: 'sem imagem para checar' });
+    const resp = await axios.post('https://api.openai.com/v1/chat/completions', {
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: [
+        { type: 'text', text: 'Você confere documentos de admissão de funcionário (Brasil). O documento esperado é: "' + tipoEsperado + '". Avalie DUAS coisas e responda SOMENTE um JSON {"legivel": true/false, "ok": true/false, "tipo": "o que parece ser", "motivo": "frase curta"}: '
+          + '(1) LEGIBILIDADE — dá pra LER os dados principais com clareza? Marque legivel:false se a imagem estiver muito borrada, escura, tremida, cortada, rasurada, com reflexo/sombra forte ou de qualquer forma impossível de ler os campos. Marque legivel:true quando dá pra ler, mesmo que a foto esteja levemente torta ou simples. '
+          + '(2) TIPO — a imagem corresponde ao documento esperado? ok:true se for (mesmo levemente torto/parcial); ok:false só se for claramente OUTRA coisa (foto aleatória, print de conversa, ou documento de tipo diferente). O motivo deve explicar em poucas palavras o que houve.' },
+        { type: 'image_url', image_url: { url: imagem } }
+      ] }],
+      response_format: { type: 'json_object' },
+      temperature: 0,
+      max_tokens: 220
+    }, { headers: { 'Authorization': 'Bearer ' + OPENAI_API_KEY, 'Content-Type': 'application/json' }, timeout: 60000 });
+    let j = {}; try { j = JSON.parse(resp.data.choices[0].message.content || '{}'); } catch (e) { j = {}; }
+    res.json({ ok: j.ok !== false, legivel: j.legivel !== false, tipo: j.tipo || '', motivo: j.motivo || '' });
+  } catch (e) {
+    res.json({ ok: true, legivel: true, motivo: 'não consegui analisar agora' });
+  }
+});
+
 app.listen(PORT, () => console.log('andro motor fiscal rodando na porta ' + PORT));
