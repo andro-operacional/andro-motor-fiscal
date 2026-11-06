@@ -180,33 +180,41 @@ function montarDocumento(nomeCliente, cnpj, detalhes) {
     </body></html>`;
 }
 // Lê a caixa postal de um cliente: indicador + lista + conteúdo. Retorna {novas, assuntos, anexo}.
-async function lerCaixaPostal(cnpj, nomeCliente) {
+async function lerCaixaPostal(cnpj, nomeCliente, opts = {}) {
+  const leve = opts.leve === true;   // modo leve (lote automático): indicador-first, sem baixar o conteúdo de cada mensagem
+  // 1) Indicador (chamada LEVE): só diz SE tem mensagem nova.
   const ind = await chamar('Monitorar', CX_INDICADOR, cnpj);
   const temNovas = lerIndicadorNovas(ind);
+  // Sem mensagem nova (ou não deu pra ler o indicador): NÃO faz mais nenhuma chamada ao Serpro.
+  if (temNovas !== true) {
+    return { novas: temNovas === true, qtde: 0, assuntos: [], anexo: null, listaErro: null };
+  }
+  // 2) Tem mensagem nova → busca só a LISTA (assuntos).
   let msgs = [], listaErro = null;
   try {
     const lista = await chamar('Consultar', CX_LISTA, cnpj, { statusLeitura: '0', indicadorPagina: '0', ponteiroPagina: '00000000000000' });
     msgs = coletarMensagens(lista).filter(m => pickIsn(m));
   } catch (e) { listaErro = e.response?.data?.mensagens?.[0]?.texto || e.response?.data || e.message; }
   if (msgs.length > CX_MAX_MSGS) msgs = msgs.slice(0, CX_MAX_MSGS);
-  const detalhes = [];
-  const assuntos = [];
-  for (const m of msgs) {
-    if (m.assuntoModelo) assuntos.push(m.assuntoModelo);
-    try {
-      const det = await chamar('Consultar', CX_DETALHE, cnpj, { isn: String(pickIsn(m)) });
-      detalhes.push(det);
-    } catch (e) { /* ignora uma mensagem que falhe */ }
-    await new Promise(r => setTimeout(r, 200));
-  }
+  const assuntos = msgs.map(m => m.assuntoModelo).filter(Boolean);
+  // 3) Conteúdo completo + documento SÓ fora do modo leve (ex.: consulta manual de 1 cliente).
   let anexo = null;
-  if (detalhes.length) {
-    const html = montarDocumento(nomeCliente || cnpj, cnpj, detalhes);
-    const b64 = Buffer.from(html, 'utf8').toString('base64');
-    anexo = { nome: 'eCAC_' + cnpj + '_' + new Date().toISOString().slice(0, 10) + '.html', dataUrl: 'data:text/html;base64,' + b64, auto: true };
+  if (!leve) {
+    const detalhes = [];
+    for (const m of msgs) {
+      try { detalhes.push(await chamar('Consultar', CX_DETALHE, cnpj, { isn: String(pickIsn(m)) })); } catch (e) { /* ignora uma mensagem que falhe */ }
+      await new Promise(r => setTimeout(r, 200));
+    }
+    if (detalhes.length) {
+      const html = montarDocumento(nomeCliente || cnpj, cnpj, detalhes);
+      const b64 = Buffer.from(html, 'utf8').toString('base64');
+      anexo = { nome: 'eCAC_' + cnpj + '_' + new Date().toISOString().slice(0, 10) + '.html', dataUrl: 'data:text/html;base64,' + b64, auto: true };
+    }
   }
-  return { novas: temNovas === true, qtde: msgs.length, assuntos, anexo, listaErro };
+  return { novas: true, qtde: msgs.length, assuntos, anexo, listaErro };
 }
+/* detecta mensagem de limite/bloqueio do Serpro pra parar na hora */
+function ehBloqueioSerpro(msg) { return /limite|excedid|excedeu|bloquea|too many|\b429\b|quota|cota|throttl|indispon/i.test(String(msg || '')); }
 
 /* ---- Chamada genérica que aceita QUALQUER idSistema (a "chamar" acima é fixa na Caixa Postal) ---- */
 async function chamarSistema(idSistema, verbo, idServico, cnpjCliente, dados = {}, versaoSistema = '1.0') {
@@ -327,7 +335,7 @@ function lerIndicadorNovas(resp) {
 app.post('/rodar', async (req, res) => {
   if (!autorizado(req, res)) return;
   if (!sb) return res.status(500).json({ ok: false, erro: 'Supabase nao configurado (faltam SUPABASE_URL e SUPABASE_SERVICE_KEY no Render)' });
-  const limite = Number(req.body?.limite) || 0; // 0 = todos
+  const lote = Math.max(1, Number(req.body?.lote ?? req.body?.limite) || 15); // quantos clientes por execução (padrão 15)
   try {
     // 1. lê a base
     const { data: row, error } = await sb.from('app_state').select('data').eq('id', 'main').maybeSingle();
@@ -335,40 +343,45 @@ app.post('/rodar', async (req, res) => {
     const db = row?.data || {};
     db.clientes = Array.isArray(db.clientes) ? db.clientes : [];
 
-    // 2. seleciona clientes ativos com CNPJ válido
-    let alvos = db.clientes.filter(c => {
+    // 2. clientes ativos com CNPJ válido, em RODÍZIO: primeiro os que faz mais tempo que não são checados.
+    const base = db.clientes.filter(c => {
       const ativo = c.ativo !== false && c.etapa !== 'Perdido' && c.etapa !== 'Inativo';
       return ativo && String(c.cnpj || '').replace(/\D/g, '').length === 14;
     });
-    if (limite > 0) alvos = alvos.slice(0, limite);
+    base.sort((a, b) => String(a.fiscalUltima || '').localeCompare(String(b.fiscalUltima || ''))); // vazio/'' (nunca checado) primeiro
+    const alvos = base.slice(0, lote);   // só o lote do dia — mantém o volume baixo no Serpro
 
     const hoje = new Date().toISOString().slice(0, 10);
     let verificados = 0, comMensagem = 0;
     const falhas = [];
+    let bloqueado = false;
 
-    // 3. consulta o e-CAC de cada um (indicador + lista + conteúdo) e anexa o documento
+    // 3. consulta LEVE (indicador-first) de cada um do lote, espaçado. Para na hora se o Serpro reclamar de limite.
     for (const c of alvos) {
       const cnpj = String(c.cnpj).replace(/\D/g, '');
       try {
-        const r = await lerCaixaPostal(cnpj, c.nome);
+        const r = await lerCaixaPostal(cnpj, c.nome, { leve: true });
         c.fiscalMsg = r.novas;
         c.fiscalUltima = hoje;
         c.fiscalPor = 'Serpro (automático)';
         c.fiscalSituacao = r.novas ? 'Mensagem nova' : 'Regular';
-        if (r.assuntos && r.assuntos.length) c.fiscalObs = r.assuntos.slice(0, 5).join(' · ');
-        // Caixa Postal: guardamos só o indicador (sim/não). NÃO anexamos o documento da mensagem.
-        // (limpa documentos automáticos antigos, mantém anexos manuais)
+        if (r.novas && r.assuntos && r.assuntos.length) c.fiscalObs = r.assuntos.slice(0, 5).join(' · ');
         c.fiscalAnexos = (Array.isArray(c.fiscalAnexos) ? c.fiscalAnexos : []).filter(a => !a.auto);
         verificados++;
         if (r.novas) comMensagem++;
       } catch (e) {
         const msg = e.response?.data?.mensagens?.[0]?.texto || e.response?.data?.mensagem || e.message;
+        if (ehBloqueioSerpro(msg)) {   // limite/bloqueio do Serpro → PARA tudo imediatamente
+          bloqueado = true;
+          falhas.push({ nome: c.nome || cnpj, cnpj, erro: 'PAROU: Serpro sinalizou limite/bloqueio — ' + String(msg).slice(0, 160) });
+          break;
+        }
         c.fiscalUltima = hoje;
         c.fiscalPor = 'Serpro (erro)';
         c.fiscalObs = String(msg).slice(0, 180);
         falhas.push({ nome: c.nome || cnpj, cnpj, erro: String(msg).slice(0, 180) });
       }
-      await new Promise(r => setTimeout(r, 350));
+      await new Promise(r => setTimeout(r, 700));   // espaçamento maior entre clientes
     }
 
     // 4. grava de volta na base (db.clientes já foi atualizado por referência)
@@ -377,7 +390,7 @@ app.post('/rodar', async (req, res) => {
       .eq('id', 'main');
     if (errSave) throw errSave;
 
-    res.json({ ok: true, total_ativos: alvos.length, verificados, com_mensagem_nova: comMensagem, falhas });
+    res.json({ ok: true, lote, total_base: base.length, total_ativos: base.length, verificados, com_mensagem_nova: comMensagem, bloqueado, falhas });
   } catch (e) {
     res.status(500).json({ ok: false, etapa: 'rodar', erro: e.response?.data || e.message });
   }
