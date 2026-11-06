@@ -1,9 +1,10 @@
 name: Analise Fiscal diaria
 
-# Roda o motor fiscal todo dia 06:00 de Brasilia (09:00 UTC). Da pra rodar na mao em Actions > Run workflow.
+# Roda em DIAS UTEIS as 06:00 de Brasilia (09:00 UTC), em lote pequeno (rodizio de ~12 clientes).
+# Da pra rodar na mao em Actions > Run workflow. So funciona com o secret MOTOR_SECRET configurado.
 on:
   schedule:
-    - cron: '0 9 * * *'
+    - cron: '0 9 * * 1-5'
   workflow_dispatch:
 
 jobs:
@@ -12,5 +13,5 @@ jobs:
     steps:
       - name: Acordar o motor (Render free dorme)
         run: curl -sS -m 120 "https://andro-motor-fiscal.onrender.com/" || true
-      - name: Rodar Analise Fiscal (todos os clientes)
-        run: curl -sS -X POST "https://andro-motor-fiscal.onrender.com/rodar" -H "content-type: application/json" -H "x-motor-secret: ${{ secrets.MOTOR_SECRET }}" -d '{}' --max-time 600
+      - name: Rodar Analise Fiscal (lote do dia)
+        run: curl -sS -X POST "https://andro-motor-fiscal.onrender.com/rodar" -H "content-type: application/json" -H "x-motor-secret: ${{ secrets.MOTOR_SECRET }}" -d '{"lote":12}' --max-time 600
