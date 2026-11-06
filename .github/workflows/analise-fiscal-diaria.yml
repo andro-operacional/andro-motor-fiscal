@@ -1,0 +1,16 @@
+name: Analise Fiscal diaria
+
+# Roda o motor fiscal todo dia 06:00 de Brasilia (09:00 UTC). Da pra rodar na mao em Actions > Run workflow.
+on:
+  schedule:
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+jobs:
+  rodar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Acordar o motor (Render free dorme)
+        run: curl -sS -m 120 "https://andro-motor-fiscal.onrender.com/" || true
+      - name: Rodar Analise Fiscal (todos os clientes)
+        run: curl -sS -X POST "https://andro-motor-fiscal.onrender.com/rodar" -H "content-type: application/json" -H "x-motor-secret: ${{ secrets.MOTOR_SECRET }}" -d '{}' --max-time 600
